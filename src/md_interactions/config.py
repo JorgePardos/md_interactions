@@ -41,6 +41,8 @@ __all__ = [
     "NamedSelection",
     "RDFConfig",
     "RDFPair",
+    "BridgeConfig",
+    "BridgePair",
     "ClusteringConfig",
     "ReportConfig",
     "load_config",
@@ -490,6 +492,50 @@ class AnglesConfig:
 
 
 # --------------------------------------------------------------------------- #
+# planarity
+# --------------------------------------------------------------------------- #
+@dataclass
+class PlanarityConfig:
+    """Centres whose planarity is followed.
+
+    Each definition is four selections: **the centre first**, then its three
+    substituents.  The reported value is the distance from the centre to the
+    plane of the other three, zero for a planar (sp2) centre.
+    """
+
+    enabled: bool = False
+    definitions: list[GeometryDef] = field(default_factory=list)
+    bins: int = 60
+    kde: bool = True
+    pbc: bool = True
+    facet: bool = True
+    normalization: str = "density"
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "PlanarityConfig":
+        where = "analyses.planarity"
+        data = _as_mapping(data, where)
+        _check_keys(data, ["enabled", "definitions", "bins", "kde", "pbc",
+                           "facet", "normalization"], where)
+        definitions: list[GeometryDef] = []
+        if data.get("enabled", True):
+            definitions = [
+                GeometryDef.from_dict(d, i, 4, f"{where}.definitions")
+                for i, d in enumerate(
+                    _as_list(data.get("definitions"), f"{where}.definitions"))
+            ]
+        return cls(
+            enabled=bool(definitions),
+            definitions=definitions,
+            bins=int(data.get("bins", 60)),
+            kde=bool(data.get("kde", True)),
+            pbc=bool(data.get("pbc", True)),
+            facet=bool(data.get("facet", True)),
+            normalization=_normalization(data.get("normalization"), where),
+        )
+
+
+# --------------------------------------------------------------------------- #
 # RMSD / RMSF
 # --------------------------------------------------------------------------- #
 @dataclass
@@ -751,23 +797,47 @@ class RgyrConfig:
 
 @dataclass
 class RDFPair:
+    """One radial distribution function.
+
+    ``center`` decides what the distances are measured from: ``atom`` (every
+    atom of ``g1``, the standard definition), ``com`` (a single centre at the
+    centre of mass of ``g1``) or ``residue`` (equivalently ``proximal`` /
+    ``min`` / ``nearest``: the distance to the *closest* atom of ``g1``, which
+    is what "solvent around this residue" means for a shape that is not a
+    sphere).  ``shell_cutoff`` overrides the automatically detected first
+    minimum used for the hydration-number time series.
+    """
+
     name: str
     g1: str
     g2: str
     nbins: int = 75
     range: tuple[float, float] = (0.0, 15.0)
     exclude_same_residue: bool = False
+    center: str = "atom"
+    shell_cutoff: float | None = None
 
     @classmethod
     def from_dict(cls, data: Any, index: int) -> "RDFPair":
         where = f"analyses.rdf.pairs[{index}]"
         data = _as_mapping(data, where)
         _check_keys(
-            data, ["name", "g1", "g2", "nbins", "range", "exclude_same_residue"], where
+            data,
+            ["name", "g1", "g2", "nbins", "range", "exclude_same_residue",
+             "center", "shell_cutoff"],
+            where,
         )
         rng = _as_list(data.get("range", [0.0, 15.0]), f"{where}.range")
         if len(rng) != 2:
             raise ConfigError(f"'{where}.range' must be [rmin, rmax].")
+        center = str(data.get("center", "atom")).lower()
+        if center not in {"atom", "com", "residue", "proximal", "min", "nearest"}:
+            raise ConfigError(
+                f"'{where}.center' must be 'atom', 'com' or 'residue' "
+                f"('proximal'/'min'/'nearest' are accepted as synonyms of "
+                f"'residue'; got '{center}')."
+            )
+        cutoff = data.get("shell_cutoff")
         return cls(
             name=str(_require(data, "name", where)),
             g1=str(_require(data, "g1", where)),
@@ -775,6 +845,8 @@ class RDFPair:
             nbins=int(data.get("nbins", 75)),
             range=(float(rng[0]), float(rng[1])),
             exclude_same_residue=bool(data.get("exclude_same_residue", False)),
+            center=center,
+            shell_cutoff=float(cutoff) if cutoff is not None else None,
         )
 
 
@@ -789,6 +861,50 @@ class RDFConfig:
         data = _as_mapping(data, where)
         _check_keys(data, ["enabled", "pairs"], where)
         pairs = [RDFPair.from_dict(p, i)
+                 for i, p in enumerate(_as_list(data.get("pairs"), f"{where}.pairs"))]
+        return cls(enabled=bool(data.get("enabled", True)) and bool(pairs), pairs=pairs)
+
+
+@dataclass
+class BridgePair:
+    """Two groups that a solvent molecule may bridge.
+
+    ``cutoff`` applies to both sides: a molecule counts as a bridge when it is
+    within that distance of ``group_a`` *and* of ``group_b`` in the same frame.
+    """
+
+    name: str
+    group_a: str
+    group_b: str
+    cutoff: float = 3.5
+    solvent: str = "resname WAT HOH SOL TIP3 T3P and name O OW OH2"
+
+    @classmethod
+    def from_dict(cls, data: Any, index: int) -> "BridgePair":
+        where = f"analyses.bridges.pairs[{index}]"
+        data = _as_mapping(data, where)
+        _check_keys(data, ["name", "group_a", "group_b", "cutoff", "solvent"], where)
+        return cls(
+            name=str(_require(data, "name", where)),
+            group_a=str(_require(data, "group_a", where)),
+            group_b=str(_require(data, "group_b", where)),
+            cutoff=float(data.get("cutoff", 3.5)),
+            solvent=str(data.get(
+                "solvent", "resname WAT HOH SOL TIP3 T3P and name O OW OH2")),
+        )
+
+
+@dataclass
+class BridgeConfig:
+    enabled: bool = False
+    pairs: list[BridgePair] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "BridgeConfig":
+        where = "analyses.bridges"
+        data = _as_mapping(data, where)
+        _check_keys(data, ["enabled", "pairs"], where)
+        pairs = [BridgePair.from_dict(p, i)
                  for i, p in enumerate(_as_list(data.get("pairs"), f"{where}.pairs"))]
         return cls(enabled=bool(data.get("enabled", True)) and bool(pairs), pairs=pairs)
 
@@ -872,12 +988,14 @@ class Config:
     selections: dict[str, str] = field(default_factory=dict)
     distances: DistancesConfig = field(default_factory=DistancesConfig)
     angles: AnglesConfig = field(default_factory=AnglesConfig)
+    planarity: PlanarityConfig = field(default_factory=PlanarityConfig)
     rmsd: RMSDConfig = field(default_factory=RMSDConfig)
     rmsf: RMSFConfig = field(default_factory=RMSFConfig)
     hbonds: HBondsConfig = field(default_factory=HBondsConfig)
     free_energy: FreeEnergyConfig = field(default_factory=FreeEnergyConfig)
     rgyr: RgyrConfig = field(default_factory=RgyrConfig)
     rdf: RDFConfig = field(default_factory=RDFConfig)
+    bridges: BridgeConfig = field(default_factory=BridgeConfig)
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     report: ReportConfig = field(default_factory=ReportConfig)
     source: Path | None = None
@@ -900,8 +1018,9 @@ class Config:
         analyses = _as_mapping(data.get("analyses"), "analyses")
         _check_keys(
             analyses,
-            ["distances", "angles", "dihedrals", "rmsd", "rmsf", "hbonds",
-             "free_energy_maps", "radius_of_gyration", "rdf", "clustering"],
+            ["distances", "angles", "dihedrals", "planarity", "rmsd", "rmsf",
+             "hbonds", "free_energy_maps", "radius_of_gyration", "rdf",
+             "bridges", "clustering"],
             "analyses",
         )
 
@@ -914,12 +1033,14 @@ class Config:
             distances=DistancesConfig.from_dict(analyses.get("distances")),
             angles=AnglesConfig.from_dict(analyses.get("angles"),
                                           analyses.get("dihedrals")),
+            planarity=PlanarityConfig.from_dict(analyses.get("planarity")),
             rmsd=RMSDConfig.from_dict(analyses.get("rmsd")),
             rmsf=RMSFConfig.from_dict(analyses.get("rmsf")),
             hbonds=HBondsConfig.from_dict(analyses.get("hbonds")),
             free_energy=FreeEnergyConfig.from_dict(analyses.get("free_energy_maps")),
             rgyr=RgyrConfig.from_dict(analyses.get("radius_of_gyration")),
             rdf=RDFConfig.from_dict(analyses.get("rdf")),
+            bridges=BridgeConfig.from_dict(analyses.get("bridges")),
             clustering=ClusteringConfig.from_dict(analyses.get("clustering")),
             report=ReportConfig.from_dict(data.get("report")),
             source=source,
@@ -935,10 +1056,12 @@ class Config:
             ("distance", [d.name for d in self.distances.pairs]),
             ("angle", [a.name for a in self.angles.angles]),
             ("dihedral", [d.name for d in self.angles.dihedrals]),
+            ("planarity", [p.name for p in self.planarity.definitions]),
             ("hbond", [h.name for h in self.hbonds.pairs]),
             ("rmsd", [g.name for g in self.rmsd.groups]),
             ("rgyr", [g.name for g in self.rgyr.groups]),
             ("rdf", [p.name for p in self.rdf.pairs]),
+            ("bridge", [p.name for p in self.bridges.pairs]),
             ("free-energy map", [m.name for m in self.free_energy.maps]),
         ]
         for kind, names in groups:
@@ -976,12 +1099,14 @@ class Config:
         flags = {
             "distances": self.distances.enabled,
             "angles_dihedrals": self.angles.enabled,
+            "planarity": self.planarity.enabled,
             "rmsd": self.rmsd.enabled,
             "rmsf": self.rmsf.enabled,
             "hbonds": self.hbonds.enabled,
             "free_energy_maps": self.free_energy.enabled,
             "radius_of_gyration": self.rgyr.enabled,
             "rdf": self.rdf.enabled,
+            "bridges": self.bridges.enabled,
             "clustering": self.clustering.enabled,
         }
         return [name for name, on in flags.items() if on]

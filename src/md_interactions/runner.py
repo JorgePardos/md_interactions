@@ -61,6 +61,9 @@ def _dispatch(system: MDSystem) -> list[tuple[str, Callable[..., AnalysisResult]
     if cfg.angles.enabled:
         from .analyses import angles_dihedrals
         jobs.append(("angles_dihedrals", angles_dihedrals.run))
+    if cfg.planarity.enabled:
+        from .analyses import planarity
+        jobs.append(("planarity", planarity.run))
     if cfg.rmsd.enabled or cfg.rmsf.enabled:
         from .analyses import rmsd_rmsf
         jobs.append(("rmsd_rmsf", rmsd_rmsf.run))
@@ -73,6 +76,9 @@ def _dispatch(system: MDSystem) -> list[tuple[str, Callable[..., AnalysisResult]
     if cfg.rdf.enabled:
         from .analyses import rdf
         jobs.append(("rdf", rdf.run))
+    if cfg.bridges.enabled:
+        from .analyses import water_bridges
+        jobs.append(("bridges", water_bridges.run))
     if cfg.clustering.enabled:
         from .analyses import clustering
         jobs.append(("clustering", clustering.run))
@@ -84,6 +90,7 @@ def run_analyses(
     verbose: bool = True,
     strict: bool = False,
     system: MDSystem | None = None,
+    dataset: "Dataset | None" = None,
 ) -> RunOutput:
     """Run every enabled analysis and write the ``results/`` tree.
 
@@ -109,7 +116,8 @@ def run_analyses(
     paths = prepare_output(config.output.directory)
 
     if config.data_only:
-        return _run_dataset(config, paths, verbose=verbose, strict=strict)
+        return _run_dataset(config, paths, verbose=verbose, strict=strict,
+                            dataset=dataset)
 
     system = system or load_system(config, verbose=verbose)
 
@@ -209,13 +217,14 @@ def _run_replica_check(output: RunOutput, verbose: bool, strict: bool) -> None:
 
 
 def _run_dataset(
-    config: Config, paths: OutputPaths, verbose: bool, strict: bool
+    config: Config, paths: OutputPaths, verbose: bool, strict: bool,
+    dataset: "Dataset | None" = None,
 ) -> RunOutput:
     """``data:`` mode — analyse pre-computed tables, no trajectory involved."""
     from .analyses import distributions
 
     started = _time.perf_counter()
-    dataset = load_dataset(config, verbose=verbose)
+    dataset = dataset or load_dataset(config, verbose=verbose)
     output = RunOutput(config=config, system=None, paths=paths, dataset=dataset)
 
     result = distributions.run(dataset, paths, verbose=verbose)
